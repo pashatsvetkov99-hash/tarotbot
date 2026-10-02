@@ -1,0 +1,26 @@
+[Unit]
+Description=TaroBot - AI Tarot Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=tarotbot
+WorkingDirectory=/opt/tarotbot
+ExecStart=/opt/tarotbot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tarotbot/data
+PrivateTmp=yes
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

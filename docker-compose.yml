@@ -1,0 +1,15 @@
+services:
+  tarotbot:
+    build: .
+    container_name: tarotbot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
