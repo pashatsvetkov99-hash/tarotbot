@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
+    ErrorEvent,
     LabeledPrice,
     Message,
     PreCheckoutQuery,
@@ -22,8 +23,10 @@ from aiogram.types import (
 
 import config
 import db
-from keyboards import pay_keyboard, sphere_keyboard, start_keyboard
+from keyboards import pay_keyboard, sphere_keyboard, start_keyboard, support_keyboard, ADMIN_USERNAME
 from states import TarotStates
+
+SUPPORT_MSG = f"\n\n🆘 Если проблема повторяется — напиши <a href=\"https://t.me/{ADMIN_USERNAME}\">администратору</a>."
 
 logging.basicConfig(
     level=logging.INFO,
@@ -212,11 +215,31 @@ async def do_tarot_reading(user_id: int, data: dict):
         reading = _clean(await gigachat_chat(prompt))
     except asyncio.TimeoutError:
         log.warning("GigaChat timeout for user %s", user_id)
-        await msg.answer("⏳ Карты не ответили вовремя. Попробуй ещё раз.")
+        await msg.answer(
+            "⏳ Карты не ответили вовремя. Попробуй ещё раз." + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
+        return
+    except aiohttp.ClientResponseError as e:
+        log.error("GigaChat HTTP error for user %s: %s %s", user_id, e.status, e.message, exc_info=True)
+        await msg.answer(
+            f"❌ Ошибка сервера (код {e.status}). Попробуй позже." + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
+        return
+    except aiohttp.ClientError as e:
+        log.error("GigaChat connection error for user %s: %s", user_id, str(e), exc_info=True)
+        await msg.answer(
+            "❌ Не удалось подключиться к серверу. Попробуй позже." + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
         return
     except Exception as e:
-        log.error("GigaChat API error for user %s: %s", user_id, type(e).__name__)
-        await msg.answer("❌ Не удалось получить расклад. Попробуй позже.")
+        log.error("GigaChat API error for user %s: %s - %s", user_id, type(e).__name__, str(e), exc_info=True)
+        await msg.answer(
+            "❌ Не удалось получить расклад. Попробуй позже." + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
         return
     finally:
         _processing.discard(user_id)
@@ -385,7 +408,7 @@ async def process_sphere(callback: CallbackQuery, state: FSMContext):
     await state.clear()
 
     if len(_waiting_queue) >= MAX_QUEUE_SIZE:
-        await callback.message.answer("⚠ Очередь переполнена. Попробуй позже.")
+        await callback.message.answer("⚠ Очередь переполнена. Попробуй позже." + SUPPORT_MSG, reply_markup=support_keyboard())
         return
 
     _waiting_queue[uid] = {
@@ -442,6 +465,60 @@ async def process_successful_payment(message: Message):
         "Нажми кнопку ниже, чтобы начать.",
         reply_markup=start_keyboard(),
     )
+
+
+# ─── /support ──────────────────────────────────────────────────────────────
+
+from aiogram.filters import Command
+
+@router.message(Command("support"))
+async def cmd_support(message: Message):
+    await message.answer(
+        "🆘 <b>Поддержка</b>\n\n"
+        f"Если бот не работает или есть вопросы — напиши "
+        f"<a href=\"https://t.me/{ADMIN_USERNAME}\">администратору</a>.",
+        reply_markup=support_keyboard(),
+    )
+
+
+@router.message(Command("test"))
+async def cmd_test(message: Message):
+    """Test GigaChat API connection."""
+    uid = message.from_user.id
+    if uid not in config.ADMIN_IDS:
+        return
+    await message.answer("🔄 Тестирую подключение к GigaChat...")
+    try:
+        result = await gigachat_chat("Скажи 'Привет' одним словом.")
+        await message.answer(f"✅ GigaChat работает!\n\nОтвет: {result}")
+    except Exception as e:
+        log.error("GigaChat test failed: %s", e, exc_info=True)
+        await message.answer(
+            f"❌ GigaChat не работает!\n\nОшибка: {type(e).__name__}: {str(e)}" + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
+
+
+# ─── Global error handler ──────────────────────────────────────────────────
+
+@dp.error()
+async def global_error_handler(event: ErrorEvent):
+    log.error("Unhandled error: %s", event.exception, exc_info=True)
+    try:
+        update = event.update
+        if update.message:
+            await update.message.answer(
+                "❌ Произошла ошибка. Попробуй позже." + SUPPORT_MSG,
+                reply_markup=support_keyboard(),
+            )
+        elif update.callback_query:
+            await update.callback_query.message.answer(
+                "❌ Произошла ошибка. Попробуй позже." + SUPPORT_MSG,
+                reply_markup=support_keyboard(),
+            )
+    except Exception:
+        log.error("Failed to send error message to user")
+    return True
 
 
 # ─── Cleanup & startup ─────────────────────────────────────────────────────

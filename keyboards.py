@@ -33,3 +33,14 @@ def pay_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⭐ Купить расклады (50 Stars)", callback_data="buy_credits")]
         ]
     )
+
+
+ADMIN_USERNAME = "CCTPECCOCTb"
+
+
+def support_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Написать в поддержку", url=f"https://t.me/{ADMIN_USERNAME}")]
+        ]
+    )
