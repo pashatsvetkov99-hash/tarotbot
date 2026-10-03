@@ -11,8 +11,6 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -24,7 +22,6 @@ from aiogram.types import (
 import config
 import db
 from keyboards import pay_keyboard, sphere_keyboard, start_keyboard, support_keyboard, ADMIN_USERNAME
-from states import TarotStates
 
 SUPPORT_MSG = f"\n\n🆘 Если проблема повторяется — напиши <a href=\"https://t.me/{ADMIN_USERNAME}\">администратору</a>."
 
@@ -39,7 +36,7 @@ bot = Bot(
     token=config.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 router = Router()
 
 SPHERE_NAMES = {
@@ -54,6 +51,10 @@ SPHERE_NAMES = {
 
 _rate_limit: dict[int, float] = {}
 RATE_LIMIT_COOLDOWN = 3.0  # seconds between actions per user
+
+# Store pending situation text (replaces fragile FSM state)
+_pending_situations: dict[int, str] = {}
+_awaiting_situation: set[int] = set()
 
 
 def _check_rate(user_id: int) -> bool:
@@ -268,11 +269,42 @@ async def process_queue():
             await do_tarot_reading(uid, data)
 
 
+# ─── /support & /test ──────────────────────────────────────────────────────
+
+from aiogram.filters import Command
+
+@router.message(Command("support"))
+async def cmd_support(message: Message):
+    await message.answer(
+        "🆘 <b>Поддержка</b>\n\n"
+        f"Если бот не работает или есть вопросы — напиши "
+        f"<a href=\"https://t.me/{ADMIN_USERNAME}\">администратору</a>.",
+        reply_markup=support_keyboard(),
+    )
+
+
+@router.message(Command("test"))
+async def cmd_test(message: Message):
+    """Test GigaChat API connection."""
+    uid = message.from_user.id
+    if uid not in config.ADMIN_IDS:
+        return
+    await message.answer("🔄 Тестирую подключение к GigaChat...")
+    try:
+        result = await gigachat_chat("Скажи 'Привет' одним словом.")
+        await message.answer(f"✅ GigaChat работает!\n\nОтвет: {result}")
+    except Exception as e:
+        log.error("GigaChat test failed: %s", e, exc_info=True)
+        await message.answer(
+            f"❌ GigaChat не работает!\n\nОшибка: {type(e).__name__}: {str(e)}" + SUPPORT_MSG,
+            reply_markup=support_keyboard(),
+        )
+
+
 # ─── /start ─────────────────────────────────────────────────────────────────
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
+async def cmd_start(message: Message):
     await db.ensure_user(message.from_user.id)
 
     uid = message.from_user.id
@@ -300,7 +332,7 @@ async def cmd_start(message: Message, state: FSMContext):
 # ─── Начать расклад ────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "start_reading")
-async def cb_start_reading(callback: CallbackQuery, state: FSMContext):
+async def cb_start_reading(callback: CallbackQuery):
     uid = callback.from_user.id
     if not _check_rate(uid):
         await callback.answer("⏳ Подожди немного", show_alert=True)
@@ -329,7 +361,8 @@ async def cb_start_reading(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    await state.set_state(TarotStates.waiting_situation)
+    _pending_situations.pop(uid, None)
+    _awaiting_situation.add(uid)
     await callback.message.answer(
         "✨ <b>Опиши ситуацию</b>\n\n"
         "Что беспокоит? Чем подробнее — тем точнее.\n\n"
@@ -339,8 +372,12 @@ async def cb_start_reading(callback: CallbackQuery, state: FSMContext):
 
 # ─── Ввод ситуации ──────────────────────────────────────────────────────────
 
-@router.message(TarotStates.waiting_situation)
-async def process_situation(message: Message, state: FSMContext):
+@router.message()
+async def process_situation(message: Message):
+    uid = message.from_user.id
+    if uid not in _awaiting_situation:
+        return  # not expecting input from this user
+
     if not message.text:
         await message.answer("❌ Отправь текстовое описание.")
         return
@@ -354,8 +391,8 @@ async def process_situation(message: Message, state: FSMContext):
     if len(text) < 10:
         await message.answer("❌ Слишком короткое описание. Напиши хотя бы пару предложений.")
         return
-    await state.update_data(situation_text=text)
-    await state.set_state(TarotStates.waiting_sphere)
+    _awaiting_situation.discard(uid)
+    _pending_situations[uid] = text
     await message.answer(
         "🎴 <b>Выбери сферу:</b>",
         reply_markup=sphere_keyboard(),
@@ -365,7 +402,7 @@ async def process_situation(message: Message, state: FSMContext):
 # ─── Выбор сферы → очередь ─────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("sphere_"))
-async def process_sphere(callback: CallbackQuery, state: FSMContext):
+async def process_sphere(callback: CallbackQuery):
     uid = callback.from_user.id
     if not _check_rate(uid):
         await callback.answer("⏳ Подожди немного", show_alert=True)
@@ -387,11 +424,10 @@ async def process_sphere(callback: CallbackQuery, state: FSMContext):
     sphere_key = callback.data
     sphere_name = SPHERE_NAMES.get(sphere_key, "Общий")
 
-    data = await state.get_data()
-    situation_text = data.get("situation_text", "")
+    situation_text = _pending_situations.pop(uid, "")
+    _awaiting_situation.discard(uid)
     if not situation_text or len(situation_text) < 10:
-        await callback.message.answer("❌ Описание потерялось. Начни заново.")
-        await state.clear()
+        await callback.message.answer("❌ Описание потерялось. Начни заново.", reply_markup=start_keyboard())
         return
 
     can_use = await db.can_use_reading(uid)
@@ -402,10 +438,7 @@ async def process_sphere(callback: CallbackQuery, state: FSMContext):
             f"за <b>{config.STARS_PRICE} ⭐ Telegram Stars</b>.",
             reply_markup=pay_keyboard(),
         )
-        await state.clear()
         return
-
-    await state.clear()
 
     if len(_waiting_queue) >= MAX_QUEUE_SIZE:
         await callback.message.answer("⚠ Очередь переполнена. Попробуй позже." + SUPPORT_MSG, reply_markup=support_keyboard())
@@ -465,38 +498,6 @@ async def process_successful_payment(message: Message):
         "Нажми кнопку ниже, чтобы начать.",
         reply_markup=start_keyboard(),
     )
-
-
-# ─── /support ──────────────────────────────────────────────────────────────
-
-from aiogram.filters import Command
-
-@router.message(Command("support"))
-async def cmd_support(message: Message):
-    await message.answer(
-        "🆘 <b>Поддержка</b>\n\n"
-        f"Если бот не работает или есть вопросы — напиши "
-        f"<a href=\"https://t.me/{ADMIN_USERNAME}\">администратору</a>.",
-        reply_markup=support_keyboard(),
-    )
-
-
-@router.message(Command("test"))
-async def cmd_test(message: Message):
-    """Test GigaChat API connection."""
-    uid = message.from_user.id
-    if uid not in config.ADMIN_IDS:
-        return
-    await message.answer("🔄 Тестирую подключение к GigaChat...")
-    try:
-        result = await gigachat_chat("Скажи 'Привет' одним словом.")
-        await message.answer(f"✅ GigaChat работает!\n\nОтвет: {result}")
-    except Exception as e:
-        log.error("GigaChat test failed: %s", e, exc_info=True)
-        await message.answer(
-            f"❌ GigaChat не работает!\n\nОшибка: {type(e).__name__}: {str(e)}" + SUPPORT_MSG,
-            reply_markup=support_keyboard(),
-        )
 
 
 # ─── Global error handler ──────────────────────────────────────────────────
