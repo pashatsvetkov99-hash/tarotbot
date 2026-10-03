@@ -22,6 +22,11 @@ async def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )"""
         )
+        # Migration: add pending_situation column if missing
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN pending_situation TEXT")
+        except Exception:
+            pass  # column already exists
         await db.commit()
 
 
@@ -109,3 +114,31 @@ async def cleanup_old_sessions(days: int = 30) -> int:
         )
         await db.commit()
         return cursor.rowcount
+
+
+async def save_pending_situation(user_id: int, text: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET pending_situation = ? WHERE user_id = ?",
+            (text, user_id),
+        )
+        await db.commit()
+
+
+async def get_pending_situation(user_id: int) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT pending_situation FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+
+async def clear_pending_situation(user_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET pending_situation = NULL WHERE user_id = ?",
+            (user_id,),
+        )
+        await db.commit()

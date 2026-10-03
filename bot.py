@@ -52,8 +52,7 @@ SPHERE_NAMES = {
 _rate_limit: dict[int, float] = {}
 RATE_LIMIT_COOLDOWN = 3.0  # seconds between actions per user
 
-# Store pending situation text (replaces fragile FSM state)
-_pending_situations: dict[int, str] = {}
+# Store pending situation text in DB (works across Railway instances)
 _awaiting_situation: set[int] = set()
 
 
@@ -361,7 +360,7 @@ async def cb_start_reading(callback: CallbackQuery):
         )
         return
 
-    _pending_situations.pop(uid, None)
+    await db.clear_pending_situation(uid)
     _awaiting_situation.add(uid)
     await callback.message.answer(
         "✨ <b>Опиши ситуацию</b>\n\n"
@@ -392,7 +391,7 @@ async def process_situation(message: Message):
         await message.answer("❌ Слишком короткое описание. Напиши хотя бы пару предложений.")
         return
     _awaiting_situation.discard(uid)
-    _pending_situations[uid] = text
+    await db.save_pending_situation(uid, text)
     await message.answer(
         "🎴 <b>Выбери сферу:</b>",
         reply_markup=sphere_keyboard(),
@@ -424,7 +423,8 @@ async def process_sphere(callback: CallbackQuery):
     sphere_key = callback.data
     sphere_name = SPHERE_NAMES.get(sphere_key, "Общий")
 
-    situation_text = _pending_situations.pop(uid, "")
+    situation_text = await db.get_pending_situation(uid)
+    await db.clear_pending_situation(uid)
     _awaiting_situation.discard(uid)
     if not situation_text or len(situation_text) < 10:
         await callback.message.answer("❌ Описание потерялось. Начни заново.", reply_markup=start_keyboard())
