@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import re
+import signal
 import ssl
 import sys
 import time
@@ -529,13 +531,29 @@ async def _cleanup_old_sessions():
 async def main():
     await db.init_db()
     dp.include_router(router)
+
+    # Railway: wait for old instance to stop before polling
+    startup_delay = int(os.getenv("STARTUP_DELAY", "10"))
+    log.info("Waiting %s seconds before starting polling...", startup_delay)
+    await asyncio.sleep(startup_delay)
+
+    # Graceful shutdown on SIGTERM (Railway sends this on redeploy)
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(_shutdown()))
+
     log.info("Bot starting...")
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, polling_timeout=30)
     finally:
         if _http_session and not _http_session.closed:
             await _http_session.close()
         log.info("Bot stopped.")
+
+
+async def _shutdown():
+    log.info("Shutdown signal received, stopping...")
+    await dp.stop_polling()
 
 
 if __name__ == "__main__":
