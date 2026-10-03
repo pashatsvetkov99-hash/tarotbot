@@ -135,6 +135,17 @@ async def get_pending_situation(user_id: int) -> str | None:
         return row[0] if row and row[0] else None
 
 
+async def is_awaiting_situation(user_id: int) -> bool:
+    """Check if user is waiting to type their situation (sentinel value 'WAITING')."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT pending_situation FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return row is not None and row[0] == "WAITING"
+
+
 async def clear_pending_situation(user_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
