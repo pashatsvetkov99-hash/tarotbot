@@ -360,7 +360,7 @@ async def cb_start_reading(callback: CallbackQuery):
         return
 
     await db.clear_pending_situation(uid)
-    await db.save_pending_situation(uid, "WAITING")
+    await db.save_pending_situation(uid, "")
     await callback.message.answer(
         "✨ <b>Опиши ситуацию</b>\n\n"
         "Что беспокоит? Чем подробнее — тем точнее.\n\n"
@@ -373,7 +373,7 @@ async def cb_start_reading(callback: CallbackQuery):
 @router.message()
 async def process_situation(message: Message):
     uid = message.from_user.id
-    if not await db.is_awaiting_situation(uid):
+    if not await db.has_pending_situation(uid):
         return  # not expecting input from this user
 
     if not message.text:
@@ -423,7 +423,7 @@ async def process_sphere(callback: CallbackQuery):
 
     situation_text = await db.get_pending_situation(uid)
     await db.clear_pending_situation(uid)
-    if not situation_text or situation_text == "WAITING" or len(situation_text) < 10:
+    if not situation_text or len(situation_text) < 10:
         await callback.message.answer("❌ Описание потерялось. Начни заново.", reply_markup=start_keyboard())
         return
 
